@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+
+# 构建产物
+build/
+dist/
+build_portable/
+dist_portable/
+build_installer/
+dist_installer/
+*.zip
+
+# 临时目录
+.screenshot-tmp/
+.smoke/
+.rtmp/
+.tmp/
+run-*.txt
+
+# 历史备份（早期手工留的 .bak 目录，不要提交）
+*.bak-*/
+*-portable.old-*/
+*.bak-*
+
+# 注意：assets/app.ico 与 assets/app_preview.png 必须提交。
+# 两个 .spec 都引用 assets/app.ico，忽略它会让全新 clone 直接打包失败。
