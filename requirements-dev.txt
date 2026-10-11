@@ -1,0 +1,4 @@
+# 打包依赖（运行程序本身只需要 PySide6）
+PySide6>=6.6
+pyinstaller>=6.0
+Pillow>=10.0
