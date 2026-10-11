@@ -6,6 +6,9 @@
 界面按 VR 环境（SteamVR 桌面视图 + 手柄射线/鼠标）重新设计：**大字号、大按钮、  
 深色高对比主题、极简布局**，主界面只保留倒计时、时间设置和两个主按钮。
 
+> **📦 下载安装包** → [最新版本 Releases](https://github.com/SuYouRyo/vr-shutdown-timer/releases/latest)  
+> 双击安装，不需要管理员权限、不弹 UAC，自动创建桌面与开始菜单快捷方式。
+
 ![主界面](screenshots/main-idle-dark.png)
 
 ---
@@ -60,7 +63,8 @@
 
 ### 方式一：安装包（推荐）
 
-下载 `VRShutdownTimer-Setup-<版本>.exe`，双击运行。这是 **NSIS** 做的标准 Windows  
+从 [Releases 页面](https://github.com/SuYouRyo/vr-shutdown-timer/releases/latest) 下载
+`VRShutdownTimer-Setup-<版本>.exe`，双击运行。这是 **NSIS** 做的标准 Windows  
 安装向导（Steam 的安装器也是 NSIS）：欢迎页 → 许可协议 → 选择组件 → 选择目录 →  
 进度条 → 完成页，可直接勾选「立即运行」。
 
