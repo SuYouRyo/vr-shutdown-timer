@@ -119,6 +119,16 @@ class Scheduler(QObject):
         self.task_changed.emit(task)
         return "restored"
 
+    def poke(self) -> None:
+        """立即重新评估一次目标时间（系统从休眠/现代待机唤醒时调用）。
+
+        S0 现代待机下 QTimer 可能被挂起，唤醒瞬间不会立刻触发 tick。
+        应用层在收到系统「已恢复」广播后调用本方法，立即用绝对时间戳
+        比对一次：若目标时刻已在休眠期间过去，会马上补执行关机或提醒，
+        不依赖 QTimer 恢复节拍。
+        """
+        self._on_tick()
+
     # ------------------------------------------------------------------ 计时
     def _reminder_threshold(self, task: Task) -> float | None:
         if not self._config.reminder_enabled:

@@ -61,3 +61,20 @@ def next_occurrence(hour: int, minute: int, now: datetime | None = None) -> date
     if target <= now + timedelta(seconds=1):
         target += timedelta(days=1)
     return target
+
+
+def clamp_window_size(widget, width: int, height: int) -> tuple[int, int]:
+    """把固定尺寸夹到当前屏幕的可用范围内。
+
+    Qt6 已经按 devicePixelRatio 用逻辑像素渲染，正常高 DPI 下窗口尺寸是
+    正确的；但在「高 DPI + 小物理分辨率」（例如 1366×768 笔记本开到 200%，
+    逻辑分辨率只剩 683×384）时，固定的 620×700 会直接溢出屏幕、底部被裁掉。
+    这里兜底把尺寸夹到可用几何范围内，宁可变小也不裁切。
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    screen = widget.screen() or QGuiApplication.primaryScreen()
+    if screen is None:
+        return width, height
+    area = screen.availableGeometry()
+    return min(width, area.width()), min(height, area.height())

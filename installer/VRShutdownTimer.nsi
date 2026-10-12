@@ -37,7 +37,7 @@ SetCompressor /SOLID lzma
 
 ; ----------------------------------------------------------------- 可覆盖项 --
 !ifndef APP_VERSION
-  !define APP_VERSION "1.2.0"
+  !define APP_VERSION "1.3.0"
 !endif
 !ifndef SOURCE_DIR
   !define SOURCE_DIR "..\dist_portable\VRShutdownTimer"

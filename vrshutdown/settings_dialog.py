@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -17,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import platform_win
 from .widgets import Stepper
 
 DIALOG_WIDTH = 580
@@ -162,13 +166,83 @@ class SettingsDialog(QDialog):
         row_layout.addWidget(self.chk_reminder, 1)
         row_layout.addWidget(self.spin_reminder)
 
+        # 声音开关 + 「测试声音」按钮
         self.chk_sound = _check_box("提醒时播放声音", self.cfg.sound_enabled)
+        self.btn_test_sound = QPushButton("测试声音")
+        self.btn_test_sound.setObjectName("GhostButton")
+        self.btn_test_sound.setFocusPolicy(Qt.NoFocus)
+        self.btn_test_sound.setCursor(Qt.PointingHandCursor)
+        self.btn_test_sound.setMinimumHeight(CHECK_HEIGHT)
+        self.btn_test_sound.clicked.connect(self._on_test_sound)
+        sound_row = QWidget()
+        sound_layout = QHBoxLayout(sound_row)
+        sound_layout.setContentsMargins(0, 0, 0, 0)
+        sound_layout.setSpacing(12)
+        sound_layout.addWidget(self.chk_sound, 1)
+        sound_layout.addWidget(self.btn_test_sound)
+
+        # 自定义提示音文件
+        self._sound_file = self.cfg.sound_file or ""
+        self.lbl_sound_file = QLabel(self._sound_file_label())
+        self.lbl_sound_file.setObjectName("HintLabel")
+        self.lbl_sound_file.setWordWrap(True)
+        self.btn_pick_sound = QPushButton("选择提示音文件…")
+        self.btn_pick_sound.setObjectName("GhostButton")
+        self.btn_pick_sound.setFocusPolicy(Qt.NoFocus)
+        self.btn_pick_sound.setCursor(Qt.PointingHandCursor)
+        self.btn_pick_sound.setMinimumHeight(CHECK_HEIGHT)
+        self.btn_pick_sound.clicked.connect(self._on_pick_sound)
+        self.btn_clear_sound = QPushButton("清除")
+        self.btn_clear_sound.setObjectName("GhostButton")
+        self.btn_clear_sound.setFocusPolicy(Qt.NoFocus)
+        self.btn_clear_sound.setCursor(Qt.PointingHandCursor)
+        self.btn_clear_sound.setMinimumHeight(CHECK_HEIGHT)
+        self.btn_clear_sound.clicked.connect(self._on_clear_sound)
+        file_row = QWidget()
+        file_layout = QHBoxLayout(file_row)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        file_layout.setSpacing(12)
+        file_layout.addWidget(self.btn_pick_sound)
+        file_layout.addWidget(self.btn_clear_sound)
+        file_layout.addWidget(self.lbl_sound_file, 1)
 
         self.chk_reminder.toggled.connect(self._sync_enabled_states)
         self.chk_sound.toggled.connect(self._sync_enabled_states)
-        return self._section("关机提醒", [reminder_row, self.chk_sound])
+        return self._section(
+            "关机提醒",
+            [reminder_row, sound_row, file_row],
+        )
+
+    def _sound_file_label(self) -> str:
+        if not self._sound_file:
+            return "提示音：内置三声蜂鸣"
+        name = Path(self._sound_file).name
+        return "提示音：%s" % name
+
+    def _on_pick_sound(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择提示音文件",
+            "",
+            "WAV 音频 (*.wav);;所有文件 (*.*)",
+        )
+        if path:
+            self._sound_file = path
+            self.lbl_sound_file.setText(self._sound_file_label())
+            self.lbl_sound_file.setToolTip(path)
+
+    def _on_clear_sound(self) -> None:
+        self._sound_file = ""
+        self.lbl_sound_file.setText(self._sound_file_label())
+        self.lbl_sound_file.setToolTip("")
+
+    def _on_test_sound(self) -> None:
+        platform_win.play_alert_sound(self._sound_file)
 
     def _build_shutdown_section(self) -> QFrame:
+        self.chk_block_sleep = _check_box(
+            "倒计时期间阻止系统睡眠（防头显黑屏，推荐）", self.cfg.block_sleep
+        )
         self.seg_shutdown = _Segmented(
             [("normal", "正常关机"), ("force", "强制关机")],
             "force" if self.cfg.force_shutdown else "normal",
@@ -194,12 +268,13 @@ class SettingsDialog(QDialog):
         grace_hint.setWordWrap(True)
 
         return self._section(
-            "关机方式", [self.seg_shutdown, hint, grace_row, grace_hint]
+            "关机方式",
+            [self.seg_shutdown, hint, self.chk_block_sleep, grace_row, grace_hint],
         )
 
     def _build_misc_section(self) -> QFrame:
         self.chk_autodelete = _check_box(
-            "任务执行后自动删除任务（下次打开不残留）", self.cfg.auto_delete_task
+            "任务执行后自动删除（不勾选则保留设定）", self.cfg.auto_delete_task
         )
         self.seg_theme = _Segmented(
             [("dark", "深色"), ("light", "浅色")],
@@ -239,6 +314,10 @@ class SettingsDialog(QDialog):
     def _sync_enabled_states(self) -> None:
         self.spin_reminder.setEnabled(self.chk_reminder.isChecked())
         self.chk_sound.setEnabled(self.chk_reminder.isChecked())
+        sound_on = self.chk_reminder.isChecked() and self.chk_sound.isChecked()
+        self.btn_test_sound.setEnabled(sound_on)
+        self.btn_pick_sound.setEnabled(sound_on)
+        self.btn_clear_sound.setEnabled(sound_on)
 
     def values(self) -> dict:
         return {
@@ -247,9 +326,11 @@ class SettingsDialog(QDialog):
             "reminder_enabled": self.chk_reminder.isChecked(),
             "reminder_seconds": self.spin_reminder.value(),
             "sound_enabled": self.chk_sound.isChecked(),
+            "sound_file": self._sound_file,
             "force_shutdown": self.seg_shutdown.value() == "force",
             "grace_seconds": self.spin_grace.value(),
             "auto_delete_task": self.chk_autodelete.isChecked(),
+            "block_sleep": self.chk_block_sleep.isChecked(),
             "theme": self.seg_theme.value(),
         }
 

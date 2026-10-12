@@ -23,6 +23,12 @@ RUN_VALUE = "VRShutdownTimer"
 
 SHUTDOWN_COMMENT = "VR Shutdown Timer"
 
+# 阻止系统睡眠 / 现代待机（S0）用的线程执行状态标志。
+# 注意：只设置 ES_SYSTEM_REQUIRED，不设置 ES_DISPLAY_REQUIRED——我们不希望
+# 倒计时期间屏幕常亮（那会打扰 VR 之外的使用场景），只要系统别进 S0 就行。
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+
 # ---------------------------------------------------------------- 单实例 --
 # 使用命名互斥体判断是否已有实例（比命名管道更稳），
 # 通过注册的自定义窗口消息让已有实例把主界面显示到前台。
@@ -155,6 +161,31 @@ def window_message_from_native(message) -> int:
         return int(msg.message)
     except Exception:
         return 0
+
+
+WM_POWERBROADCAST = 0x0218
+PBT_APMSUSPEND = 0x0004
+PBT_APMRESUMESUSPEND = 0x0007
+PBT_APMRESUMEAUTOMATIC = 0x0012
+
+
+def power_event_from_native(message) -> int | None:
+    """从 Qt nativeEvent 的 MSG 指针里取出电源事件类型（wParam）。
+
+    只关心 WM_POWERBROADCAST；其它消息返回 None。
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        address = message if isinstance(message, int) else int(message)
+        if not address:
+            return None
+        msg = ctypes.cast(address, ctypes.POINTER(ctypes.wintypes.MSG)).contents
+        if int(msg.message) != WM_POWERBROADCAST:
+            return None
+        return int(msg.wParam)
+    except Exception:
+        return None
 
 # ---------------------------------------------------------------- 开机自启 --
 
@@ -497,21 +528,73 @@ def initiate_shutdown_api(force: bool = False, grace: int = 3) -> bool:
 # ---------------------------------------------------------------- 提示音 --
 
 
-def play_alert_sound() -> None:
-    """后台线程播放三声提示音，不阻塞界面。"""
+def _sound_worker(sound_file: str) -> None:
+    """实际的发声逻辑，跑在后台线程里，不阻塞界面。"""
+    try:
+        import winsound
+    except Exception:
+        return
 
-    def worker() -> None:
+    # 优先播放用户自定义的 WAV；文件不存在 / 格式不对时回退到内置蜂鸣。
+    if sound_file:
         try:
-            import winsound
-
-            for freq, dur in ((880, 240), (1175, 240), (880, 380)):
-                winsound.Beep(freq, dur)
+            winsound.PlaySound(
+                sound_file,
+                winsound.SND_FILENAME | winsound.SND_NODEFAULT,
+            )
+            return
         except Exception:
-            try:
-                import winsound
+            pass
 
-                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
-            except Exception:
-                pass
+    try:
+        for freq, dur in ((880, 240), (1175, 240), (880, 380)):
+            winsound.Beep(freq, dur)
+    except Exception:
+        try:
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            pass
 
-    threading.Thread(target=worker, daemon=True, name="alert-sound").start()
+
+def play_alert_sound(sound_file: str = "") -> None:
+    """后台线程播放提示音，不阻塞界面。"""
+    threading.Thread(
+        target=_sound_worker, args=(sound_file,), daemon=True, name="alert-sound"
+    ).start()
+
+
+# ------------------------------------------------------------ 阻止睡眠(S0) --
+
+
+def prevent_sleep() -> None:
+    """倒计时期间阻止系统进入睡眠 / 现代待机（S0）。
+
+    SetThreadExecutionState 作用于**调用它的线程**，且 ES_CONTINUOUS 会一直
+    生效到该线程再次以 ES_CONTINUOUS 单独调用为止。因此本函数必须在主线程
+    里调用（app.py 的 start_task 由按钮点击触发，正好在主线程）。
+
+    若机器仍被其他因素（电源计划、硬件、组策略）强制进入 S0，这层防护会失效，
+    所以 README 同时建议用户把电源计划设为「从不睡眠」作为双重保障。
+    """
+    if not IS_WINDOWS:
+        return
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.SetThreadExecutionState.argtypes = [ctypes.c_ulong]
+        kernel32.SetThreadExecutionState.restype = ctypes.c_ulong
+        kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+    except OSError as exc:
+        diag.log("阻止系统睡眠失败: %r" % (exc,))
+
+
+def allow_sleep() -> None:
+    """撤销阻止睡眠，恢复系统默认电源策略（同样必须在主线程调用）。"""
+    if not IS_WINDOWS:
+        return
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.SetThreadExecutionState.argtypes = [ctypes.c_ulong]
+        kernel32.SetThreadExecutionState.restype = ctypes.c_ulong
+        kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+    except OSError:
+        pass

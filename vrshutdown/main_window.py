@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
 from .config import APP_DISPLAY_NAME
 from .icon import app_icon, power_pixmap
 from . import platform_win
-from .util import format_hms, format_moment, humanize, next_occurrence
+from .util import clamp_window_size, format_hms, format_moment, humanize, next_occurrence
 from .widgets import Stepper
 
 WINDOW_WIDTH = 620
@@ -53,7 +54,15 @@ class MainWindow(QWidget):
 
     # -------------------------------------------------------------- 界面搭建
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        # 内容包一层滚动区域：正常屏幕下不出现滚动条、外观不变；
+        # 「高 DPI + 小分辨率」下窗口被夹小后，滚动兜底保证底部按钮仍可达，
+        # 不再像固定布局那样直接把状态栏裁掉。
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(26, 22, 26, 24)
         root.setSpacing(16)
 
@@ -63,9 +72,21 @@ class MainWindow(QWidget):
         root.addWidget(self._build_actions())
         root.addWidget(self._build_status())
 
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName("SettingsScroll")  # 复用透明背景样式
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.viewport().setStyleSheet("background: transparent;")
+        self._scroll.setWidget(content)
+        outer.addWidget(self._scroll)
+
         self.layout().activate()
-        height = max(MIN_WINDOW_HEIGHT, self.sizeHint().height())
-        self.setFixedSize(WINDOW_WIDTH, height)
+        # +4px 余量：sizeHint 与实际布局偶有 1~2px 出入，差一点就会出现
+        # 只有一条缝的滚动条；多给几像素让内容必定放得下。
+        desired_height = max(MIN_WINDOW_HEIGHT, content.sizeHint().height() + 4)
+        width, height = clamp_window_size(self, WINDOW_WIDTH, desired_height)
+        self.setFixedSize(width, height)
 
     def _build_header(self) -> QHBoxLayout:
         row = QHBoxLayout()

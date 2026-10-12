@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .util import format_moment
+from .util import clamp_window_size, format_moment
 
 WIDTH = 620
 HEIGHT = 380
@@ -35,7 +35,8 @@ class ReminderDialog(QDialog):
             Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(WIDTH, HEIGHT)
+        width, height = clamp_window_size(self, WIDTH, HEIGHT)
+        self.setFixedSize(width, height)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)

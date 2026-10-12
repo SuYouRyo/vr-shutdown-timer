@@ -32,10 +32,11 @@
 | 开机自动启动      | 写入 `HKCU\...\CurrentVersion\Run`，不自建计划任务；若程序被移动过会自愈为当前路径 |
 | 窗口置顶        | 方便 VR 桌面视图操作                                             |
 | 关机前弹出提醒     | 可设定提前 N 秒（5–600，步进 5）                                    |
-| 提醒时播放声音     | 三声蜂鸣（后台线程，不卡界面）                                          |
+| 提醒时播放声音     | 三声蜂鸣（后台线程，不卡界面）；可选自定义 WAV 提示音，并可「测试声音」              |
 | 关机方式        | 正常关机 / 强制关机（`/f`）                                        |
 | 发出指令后的宽限时间  | 1–60 秒，给你最后一次反悔的机会                                       |
-| 任务执行后自动删除任务 | 勾选后关机完成即清空设定；不勾选则保留上次设定方便复用                              |
+| 倒计时期间阻止系统睡眠 | 默认开启，防止现代待机（S0）导致 SteamVR 断流、头显黑屏                          |
+| 任务执行后自动删除任务 | 默认**不勾选**（保留上次设定，方便每晚复用）；勾选后关机完成即清空设定                |
 | 主题          | 深色（默认）/ 浅色                                               |
 
 ![设置窗口](screenshots/settings-dark.png)
@@ -110,6 +111,10 @@ VRShutdownTimer-Setup-1.2.0.exe /S /D="D:\Tools\VRShutdownTimer"
 ## 关机实现
 
 - 计时完全由程序自身完成（`QTimer` 每 200ms 比对**绝对时间戳**，不会累加漂移）。
+- **倒计时期间默认阻止系统睡眠**：通过 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`  
+  防止系统进入现代待机（S0），避免 SteamVR 断流、头显黑屏；任务取消/结束/退出后自动恢复。
+- 系统若仍因电源计划等被强制进入 S0，程序监听 `WM_POWERBROADCAST` 电源广播，  
+  唤醒后**立即**用绝对时间戳重新评估任务（`QTimer` 被挂起也不影响补执行）。
 - 到点优先调用系统自带的 `shutdown.exe`（用 `%SystemRoot%\System32` 下的**绝对路径**，  
   避免 PATH 被劫持或损坏）：
   ```
@@ -217,9 +222,11 @@ python installer\build_installer.py
   "reminder_enabled": true,
   "reminder_seconds": 60,       // 关机前 N 秒提醒（5–600）
   "sound_enabled": true,
+  "sound_file": "",             // 自定义提示音（WAV），空串 = 内置蜂鸣
   "force_shutdown": false,      // false=正常关机 true=强制关机
-  "auto_delete_task": true,     // 任务执行后自动删除
+  "auto_delete_task": false,    // 默认 false：关机后保留上次设定方便复用
   "grace_seconds": 3,           // 发出指令后的宽限秒数（1–60）
+  "block_sleep": true,          // 倒计时期间阻止系统进入现代待机（S0）
   "last_mode": "countdown",     // countdown | clock
   "last_countdown_minutes": 30,
   "last_clock_hour": 23,
@@ -260,7 +267,7 @@ vr-shutdown-timer/
 │  ├─ make_version_info.py    # 由 APP_VERSION 生成 exe 版本资源
 │  └─ screenshot.py           # 渲染各界面 PNG，检查排版
 ├─ tests/
-│  ├─ test_core.py            # 核心逻辑自测（52 项，含关机返回码分支）
+│  ├─ test_core.py            # 核心逻辑自测（63 项，含关机返回码分支、恢复边界、日志轮转）
 │  └─ test_flow.py            # 端到端流程自测（23 项，dry-run，绝不关机）
 ├─ VRShutdownTimer.spec           # 单文件配置
 ├─ VRShutdownTimer-portable.spec  # 便携目录配置
@@ -273,7 +280,8 @@ vr-shutdown-timer/
 ## 自测与排版检查
 
 ```powershell
-python tests/test_core.py        # 52 项：时间格式、配置校验、自启、调度、关机返回码分支
+python tests/test_core.py        # 63 项：时间格式、配置校验、自启、调度、返回码分支、
+                                 #       恢复边界（剩 3 秒 / 配置损坏）、日志轮转
 python tests/test_flow.py        # 23 项：提醒弹窗、取消、到点执行、自动删除、时钟模式
 python tools/screenshot.py       # 输出 screenshots/*.png（深色 + 浅色）
 ```
@@ -293,20 +301,39 @@ python main.py
 
 ---
 
-## 注意事项
+## 使用前必读
 
+- **关于睡眠 / 黑屏**：程序默认在倒计时期间通过 `SetThreadExecutionState` 阻止系统  
+  进入现代待机（S0），尽量保证 SteamVR 不断流、头显不黑屏。但这层防护依赖程序  
+  一直运行，**无法对抗电源计划、组策略或硬件强制的休眠**。为保证万无一失，建议  
+  把 Windows 电源计划设为「从不进入睡眠」（尤其戴着 VR 头显睡觉时）。
 - 关机需要当前用户有 `SeShutdownPrivilege`（普通用户默认有）；若被安全软件拦截，  
   程序会明确提示「关机指令发送失败」。
-- 「任务执行后自动删除任务」勾选时，关机完成后设定会回到默认（30 分钟）；  
-  不勾选则保留上次的小时/分钟或目标时刻，方便下次一键复用。
-- 界面字号与按钮尺寸按 VR 观看距离放大，窗口使用固定尺寸以避免任何排版错乱。
-- 程序本身不会阻止系统休眠；若机器在倒计时期间休眠，唤醒后会立即补执行关机。
+- 「任务执行后自动删除任务」默认**不勾选**：关机完成后保留上次的小时/分钟或目标  
+  时刻，方便每晚一键复用；勾选则回到默认（30 分钟）。
+- **系统要求**：Windows 10 / 11。所用 API（`SetThreadExecutionState`、  
+  `InitiateSystemShutdownExW`、`shutdown.exe`）自 Windows Vista 起就存在，  
+  理论上 Win10 22H2 可正常使用，但本项目主要在 Windows 11 上测试，Win10 未逐项实测。
+- 界面字号与按钮尺寸按 VR 观看距离放大，窗口固定尺寸并自动夹到屏幕可用范围内，  
+  避免高 DPI 小屏下溢出。
 
 ### 常见问题
 
 **Q：设了时间，到点却没关机？**  
 A：多数是安全软件（如卡巴斯基）拦了关机命令。设置里改用「强制关机」再试，  
 或把安装目录加入杀软白名单。也可以看 `%APPDATA%\VRShutdownTimer\startup.log`。
+
+**Q：到点了却变成「重启」而不是关机？**  
+A：这大概率不是本工具的问题，而是 Windows 自身的 Bug：2026 年 1 月后的部分  
+系统更新（如 KB5073455 等）会导致开启 VSM（基于虚拟化的安全）的机器「关机变重启」。  
+此时即使用「强制关机」也可能仍是重启。请检查系统更新、尝试 `shutdown /s /t 0`  
+命令行关机，或关闭 VSM；若命令行同样重启，即为系统问题，与本工具无关。
+
+**Q：Windows Defender / 杀软把程序报成病毒？**  
+A：本程序无签名，PySide6 打包的 exe 偶尔会被误报。处理办法：  
+1. 在 Defender 里选择「允许」，或把安装目录加入排除项；  
+2. 到 <https://www.microsoft.com/wdsi/filesubmission> 提交误报样本申诉；  
+3. 长期根治需购买代码签名证书（成本较高，暂未做）。
 
 **Q：双击安装包没反应 / 一闪而过？**  
 A：先看 `%TEMP%` 下有没有 `VRShutdownTimer-Setup` 相关残留。如果某个安全策略  
@@ -319,6 +346,26 @@ A：先卸载（卸载时选择不保留设置），再手动删掉 `%APPDATA%\V
 ---
 
 ## 更新日志
+
+### 1.3.0 — 修复 VR 睡眠场景与可感知度
+
+1. **倒计时期间阻止系统睡眠（S0）**：新增设置项「倒计时期间阻止系统睡眠」，默认开启，  
+   通过 `SetThreadExecutionState` 防止系统进入现代待机，避免 SteamVR 断流、头显黑屏。  
+   任务取消、到点执行或退出后自动恢复系统默认电源策略。
+2. **唤醒兜底**：监听 `WM_POWERBROADCAST`，系统从睡眠/现代待机恢复后立即用绝对时间戳  
+   重新评估任务，不依赖被挂起的 `QTimer`。
+3. **默认保留上次设定**：`auto_delete_task` 默认改为 `false`——VRChat 睡眠玩家每晚都想  
+   设 6 点关机，现在关机后设定保留、次日一键复用，不用每天重设。
+4. **声音可感知度**：支持自定义 WAV 提示音文件；设置里新增「测试声音」按钮，  
+   方便在 VR 音频环境下实测三声蜂鸣是否够响。
+5. **高 DPI 自适应**：主窗口与提醒弹窗的固定尺寸自动夹到屏幕可用范围内，  
+   修复「高 DPI + 小分辨率」下窗口溢出、底部被裁掉的问题。
+6. **FAQ 补全**：新增「关机变重启（VSM Bug）」「Defender 误报」两条常见问题，  
+   并把睡眠/黑屏说明提到「使用前必读」。
+7. **边界测试**：补充异常恢复边界（剩余恰 3 秒、配置损坏）与日志轮转测试。
+8. **唤醒补评估不再阻塞事件循环**：`WM_POWERBROADCAST` 回调运行在原生事件过滤器里，
+   而重新评估任务可能立刻触发关机（同步等待 `shutdown.exe`，失败还会弹模态框）。
+   现在改为经 0 延时定时器把评估推迟到事件循环的下一拍，避免重入事件循环导致界面卡死。
 
 ### 1.2.0 — 正式安装包 + 一轮安全审计
 

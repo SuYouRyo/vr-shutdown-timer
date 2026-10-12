@@ -21,6 +21,7 @@ from PySide6.QtCore import QCoreApplication, QTimer  # noqa: E402
 from vrshutdown import platform_win  # noqa: E402
 from vrshutdown.config import Config, config_path  # noqa: E402
 from vrshutdown.scheduler import Scheduler  # noqa: E402
+from vrshutdown import diag  # noqa: E402
 from vrshutdown.util import (  # noqa: E402
     format_hms,
     format_moment,
@@ -69,6 +70,9 @@ def test_util() -> None:
 def test_config() -> None:
     print("[config]")
     cfg = Config()
+    check("default keeps last task", cfg.auto_delete_task is False, str(cfg.auto_delete_task))
+    check("default blocks sleep", cfg.block_sleep is True, str(cfg.block_sleep))
+    check("default no custom sound", cfg.sound_file == "", repr(cfg.sound_file))
     cfg.theme = "light"
     cfg.reminder_seconds = 99999
     cfg.last_countdown_minutes = -3
@@ -282,12 +286,83 @@ def test_scheduler() -> None:
     check("restore with nothing", sched.restore() == "none")
 
 
+def test_recovery_boundaries() -> None:
+    """异常恢复的边界情况：剩余时间刚好 3 秒、配置损坏。"""
+    print("[recovery-boundaries]")
+    app = QCoreApplication.instance() or QCoreApplication(sys.argv[:1])
+    cfg = Config()
+    sched = Scheduler(cfg)
+
+    # 剩余刚好 3 秒（等于 MIN_REMAINING_TO_RESTORE 阈值）应判为「已过期」，
+    # 不能恢复——否则恢复后 200ms 内就触发，用户连取消的机会都没有。
+    cfg.pending_task = {
+        "target": time.time() + 3.0,
+        "mode": "countdown",
+        "duration": 600.0,
+        "started_at": time.time() - 597.0,
+    }
+    check("exactly 3s counts as expired", sched.restore() == "expired")
+    check("expired clears pending", cfg.pending_task is None)
+
+    # 剩余略大于阈值则正常恢复
+    cfg.pending_task = {
+        "target": time.time() + 3.5,
+        "mode": "countdown",
+        "duration": 600.0,
+        "started_at": time.time(),
+    }
+    check("just above 3s restores", sched.restore() == "restored")
+    sched.cancel()
+
+    # 配置损坏：写入非法 JSON，加载应回退到默认值且不抛异常
+    config_path().write_text("{ 这不是合法的 JSON !!!", encoding="utf-8")
+    recovered = Config.load()
+    check("corrupt config falls back to defaults",
+          recovered.theme == "dark" and recovered.pending_task is None)
+    check("corrupt config auto_delete default False", recovered.auto_delete_task is False)
+
+
+def test_log_rotation() -> None:
+    """日志写满后应轮转为 .1 备份，而不是无限增长或抛异常。"""
+    print("[log-rotation]")
+    original_max = diag.MAX_BYTES
+    diag.MAX_BYTES = 128  # 用很小的阈值触发轮转，避免写几百 KB
+    try:
+        path = diag.log_path()
+        try:
+            path.unlink(missing_ok=True)
+            path.with_name(path.name + ".1").unlink(missing_ok=True)
+        except OSError:
+            pass
+        for _ in range(10):
+            diag.log("x" * 64)  # 每条约 85 字节，10 条约 850 字节 > 128
+        check("log rotated to .1", path.with_name(path.name + ".1").exists(),
+              str(path.with_name(path.name + ".1")))
+        check("log file still exists", path.exists())
+    finally:
+        diag.MAX_BYTES = original_max
+
+
+def test_sleep_block_safe() -> None:
+    """阻止/恢复睡眠在任何平台上都不应抛异常（非 Windows 是空操作）。"""
+    print("[sleep-block]")
+    try:
+        platform_win.prevent_sleep()
+        platform_win.allow_sleep()
+        check("prevent/allow sleep never raise", True)
+    except Exception as exc:  # noqa: BLE001
+        check("prevent/allow sleep never raise", False, repr(exc))
+
+
 def main() -> int:
     test_util()
     test_config()
     test_autostart()
     test_shutdown_branches()
     test_scheduler()
+    test_recovery_boundaries()
+    test_log_rotation()
+    test_sleep_block_safe()
     print()
     print("通过 %d 项，失败 %d 项" % (PASSED, len(FAILED)))
     if FAILED:

@@ -10,7 +10,7 @@ from typing import Any
 
 APP_NAME = "VRShutdownTimer"
 APP_DISPLAY_NAME = "VR 定时关机"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 THEMES = ("dark", "light")
 MODES = ("countdown", "clock")
@@ -22,6 +22,7 @@ BOOL_FIELDS = (
     "sound_enabled",
     "auto_delete_task",
     "force_shutdown",
+    "block_sleep",
 )
 
 
@@ -79,10 +80,12 @@ class Config:
     reminder_enabled: bool = True
     reminder_seconds: int = 60
     sound_enabled: bool = True
+    sound_file: str = ""  # 自定义提示音（WAV），空串 = 用内置三声蜂鸣
     # 关机行为
     force_shutdown: bool = False
-    auto_delete_task: bool = True
+    auto_delete_task: bool = False  # 默认保留上次设定，方便每晚复用
     grace_seconds: int = 3
+    block_sleep: bool = True  # 倒计时期间阻止系统进入现代待机（S0）
     # 上次使用的设定
     last_mode: str = "countdown"
     last_countdown_minutes: int = 30
@@ -139,6 +142,8 @@ class Config:
         self.last_clock_minute = _clamp_int(self.last_clock_minute, 0, 59, 0)
         for name in BOOL_FIELDS:
             setattr(self, name, bool(getattr(self, name)))
+        if not isinstance(self.sound_file, str):
+            self.sound_file = ""
 
         pending = self.pending_task
         if not isinstance(pending, dict):

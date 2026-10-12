@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QObject, QTimer, Qt
+from PySide6.QtCore import QAbstractNativeEventFilter, QObject, QTimer, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
@@ -19,6 +19,26 @@ from .util import format_hms, format_moment
 
 UI_REFRESH_MS = 200
 TOOLTIP_REFRESH_SECONDS = 1
+
+
+class _PowerEventFilter(QAbstractNativeEventFilter):
+    """监听系统电源广播，唤醒后立即重新评估定时任务。
+
+    现代待机（S0）下 QTimer 可能被挂起：机器进入 S0 再唤醒，若 QTimer 没
+    及时恢复节拍，6 点该触发的关机会被拖到下一个 tick 才补上，甚至更糟。
+    这里在收到 PBT_APMRESUME* 后主动 poke 调度器，用绝对时间戳立即比对一次。
+    """
+
+    def __init__(self, controller) -> None:
+        super().__init__()
+        self._controller = controller
+
+    def nativeEventFilter(self, event_type, message):  # noqa: ANN001
+        if event_type in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
+            event = platform_win.power_event_from_native(message)
+            if event is not None:
+                self._controller._on_system_power_event(event)
+        return False, 0
 
 
 class Controller(QObject):
@@ -55,6 +75,10 @@ class Controller(QObject):
 
         self.scheduler.reminder_due.connect(self._on_reminder)
         self.scheduler.fired.connect(self._on_fired)
+
+        # 监听系统电源广播，唤醒后立即重新评估任务（S0 下 QTimer 可能被挂起）
+        self._power_filter = _PowerEventFilter(self)
+        self.qapp.installNativeEventFilter(self._power_filter)
 
         self.apply_theme()
         self._setup_tray(enable_tray)
@@ -128,6 +152,9 @@ class Controller(QObject):
     # ------------------------------------------------------------------ 任务
     def start_task(self, target: float, mode: str, duration: float) -> None:
         task = self.scheduler.start(target, mode, duration)
+        if self.config.block_sleep:
+            # 在倒计时期间阻止系统进入现代待机（S0），否则 VR 头显会黑屏。
+            platform_win.prevent_sleep()
         self.window.refresh()
         self._update_tray_menu()
         self.window.set_status("定时关机已开始", "info")
@@ -142,6 +169,7 @@ class Controller(QObject):
             # 撤回后本次会话不再“已发出”，允许用户重新设定
             self._skip_final_save = False
         had_task = self.scheduler.cancel()
+        platform_win.allow_sleep()  # 取消任务后恢复系统默认电源策略
         self._close_reminder()
         self.window.refresh()
         self._update_tray_menu()
@@ -154,10 +182,25 @@ class Controller(QObject):
         else:
             self.window.set_status("当前没有进行中的定时任务", "info")
 
+    def _on_system_power_event(self, event: int) -> None:
+        """系统电源事件回调：从休眠/现代待机恢复后立即重新评估任务。
+
+        注意：本回调是在 QAbstractNativeEventFilter 里被调用的，也就是**正在处理
+        原生消息**。scheduler.poke() 可能立刻走到「到点执行」，而在那里会同步等待
+        shutdown.exe（最长数秒）、失败时还会弹出模态对话框——在原生事件过滤器里
+        做这些事是危险的（重入事件循环、界面卡死）。
+        所以这里只安排一个 0 延时定时器，把真正的评估推迟到事件循环的下一次迭代。
+        """
+        if event in (platform_win.PBT_APMRESUMESUSPEND, platform_win.PBT_APMRESUMEAUTOMATIC):
+            platform_win.diag.log("系统已从睡眠/现代待机恢复，立即重新评估任务")
+            QTimer.singleShot(0, self.scheduler.poke)
+
     def _restore_task(self) -> None:
         result = self.scheduler.restore()
         self._update_tray_menu()
         if result == "restored":
+            if self.config.block_sleep:
+                platform_win.prevent_sleep()
             self.window.refresh()
             remaining = self.scheduler.remaining() or 0
             self.window.set_status("已恢复上次的定时任务", "warn")
@@ -174,7 +217,7 @@ class Controller(QObject):
         self.reminder_dialog = dialog
         dialog.present()
         if self.config.sound_enabled:
-            platform_win.play_alert_sound()
+            platform_win.play_alert_sound(self.config.sound_file)
         self._notify("距离关机还有 %d 秒，点击托盘图标可取消" % seconds, critical=True)
 
     def _on_reminder_closed(self, _result: int) -> None:
@@ -190,6 +233,8 @@ class Controller(QObject):
     # ------------------------------------------------------------------ 关机
     def _on_fired(self, task) -> None:
         self._close_reminder()
+        # 任务已到点：不再需要阻止系统睡眠（而且系统马上就要关机了）
+        platform_win.allow_sleep()
         force = bool(self.config.force_shutdown)
         grace = max(1, int(self.config.grace_seconds))
         outcome = platform_win.run_shutdown(force=force, grace=grace)
@@ -262,6 +307,12 @@ class Controller(QObject):
             )
 
         self.config.save()
+        # 若任务进行中，立即按新设置同步阻止睡眠状态（开关可能被刚改过）
+        if self.scheduler.is_active():
+            if self.config.block_sleep:
+                platform_win.prevent_sleep()
+            else:
+                platform_win.allow_sleep()
         if theme_changed:
             self.apply_theme()
         self.window.apply_theme_refresh()
@@ -351,6 +402,7 @@ class Controller(QObject):
         self.save_session_config()
         self.config.pending_task = None
         self.config.save()
+        platform_win.allow_sleep()  # 退出前恢复系统默认电源策略
         if self.tray is not None:
             self.tray.hide()
         self.qapp.quit()
